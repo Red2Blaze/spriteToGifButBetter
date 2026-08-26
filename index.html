@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Draggable Frame Marker</title>
+    <script src="js/gif.js"></script>
+    <style>
+        body { 
+            font-family: system-ui, -apple-system, sans-serif; 
+            background: #f4f4f5; 
+            color: #18181b; 
+            padding: 2rem; 
+        }
+        .container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            background: white; 
+            padding: 2rem; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); 
+        }
+        h1 { margin-top: 0; font-size: 1.5rem; }
+        p.instructions { color: #52525b; font-size: 0.95rem; margin-bottom: 1.5rem; line-height: 1.5; }
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; font-weight: 500; margin-bottom: 0.25rem; font-size: 0.9rem; }
+        input { 
+            width: 100%; 
+            padding: 0.5rem; 
+            border: 1px solid #d4d4d8; 
+            border-radius: 4px; 
+            box-sizing: border-box; 
+        }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        
+        .canvas-container {
+            margin-top: 1.5rem;
+            width: 100%;
+            max-height: 500px;
+            overflow: auto;
+            border: 1px solid #d4d4d8;
+            border-radius: 4px;
+            background: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMUlEQVQ4T2NkYNgNwL2A8P9/RiIBUwwc0MDBaMAwjIEaB0ZjkB0zGjAgQYBGDIwGAADk+xUD1k+hQQAAAABJRU5ErkJggg==') repeat; 
+        }
+        
+        canvas { display: block; cursor: crosshair; }
+        
+        .btn-group { display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap;}
+        button { 
+            color: white; border: none; padding: 0.75rem 1rem; 
+            border-radius: 4px; cursor: pointer; font-size: 0.9rem; 
+            font-weight: bold; flex: 1; min-width: 150px;
+        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: #3b82f6; }
+        .btn-primary:hover:not(:disabled) { background: #2563eb; }
+        .btn-secondary { background: #71717a; }
+        .btn-secondary:hover:not(:disabled) { background: #52525b; }
+        .btn-magic { background: #8b5cf6; } /* Purple for auto detect */
+        .btn-magic:hover:not(:disabled) { background: #7c3aed; }
+        
+        #output { margin-top: 2rem; text-align: center; }
+        img.preview { border: 1px dashed #a1a1aa; border-radius: 4px; }
+        .download-btn { 
+            display: inline-block; margin-top: 1rem; background: #10b981; 
+            color: white; text-decoration: none; padding: 0.5rem 1.5rem; 
+            border-radius: 4px; font-weight: bold; 
+        }
+        .download-btn:hover { background: #059669; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Manual & Auto Frame Marker</h1>
+    <p class="instructions">
+        <strong>Auto Detect:</strong> Click the purple button to let the app find the sprites automatically.<br>
+        <strong>Manual Edits:</strong> Left-click to add, drag to move, and right-click to delete markers.
+    </p>
+    
+    <div class="form-group">
+        <label for="imageInput">Sprite Sheet Image (PNG with transparency)</label>
+        <input type="file" id="imageInput" accept="image/*">
+    </div>
+
+    <div class="grid">
+        <div class="form-group">
+            <label for="frameWidth">Frame Width (px)</label>
+            <input type="number" id="frameWidth" value="64">
+        </div>
+        <div class="form-group">
+            <label for="frameHeight">Frame Height (px)</label>
+            <input type="number" id="frameHeight" value="64">
+        </div>
+        <div class="form-group">
+            <label for="frameDelay">Frame Delay (ms)</label>
+            <input type="number" id="frameDelay" value="100">
+        </div>
+    </div>
+
+    <div class="canvas-container">
+        <canvas id="previewCanvas"></canvas>
+    </div>
+
+    <div class="btn-group">
+        <button id="autoDetectBtn" class="btn-magic">✨ Auto Detect Frames</button>
+        <button id="clearBtn" class="btn-secondary">Clear All</button>
+        <button id="generateBtn" class="btn-primary">Generate GIF</button>
+    </div>
+
+    <div id="output"></div>
+</div>
+
+<script>
+    let uploadedImage = null;
+    let markers = []; 
+    
+    let isDragging = false;
+    let draggedMarkerIndex = -1;
+
+    const canvas = document.getElementById('previewCanvas');
+    const ctx = canvas.getContext('2d');
+    const fwInput = document.getElementById('frameWidth');
+    const fhInput = document.getElementById('frameHeight');
+
+    document.getElementById('imageInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const img = new Image();
+        img.onload = () => {
+            uploadedImage = img;
+            markers = []; 
+            canvas.width = img.width;
+            canvas.height = img.height;
+            drawCanvas();
+        };
+        img.src = URL.createObjectURL(file);
+    });
+
+    function getMousePos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+    }
+
+    function getHitMarkerIndex(mouseX, mouseY) {
+        const fw = parseInt(fwInput.value) || 64;
+        const fh = parseInt(fhInput.value) || 64;
+
+        for (let i = markers.length - 1; i >= 0; i--) {
+            const marker = markers[i];
+            const left = marker.x - (fw / 2);
+            const right = marker.x + (fw / 2);
+            const top = marker.y - (fh / 2);
+            const bottom = marker.y + (fh / 2);
+
+            if (mouseX >= left && mouseX <= right && mouseY >= top && mouseY <= bottom) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // --- MOUSE EVENTS ---
+    canvas.addEventListener('mousedown', (e) => {
+        if (!uploadedImage || e.button !== 0) return;
+        
+        const { x, y } = getMousePos(e);
+        const hitIndex = getHitMarkerIndex(x, y);
+
+        if (hitIndex !== -1) {
+            isDragging = true;
+            draggedMarkerIndex = hitIndex;
+        } else {
+            markers.push({ x: Math.round(x), y: Math.round(y) });
+            isDragging = true;
+            draggedMarkerIndex = markers.length - 1;
+        }
+        drawCanvas();
+    });
+
+    canvas.addEventListener('contextmenu', (e) => {
+        e.preventDefault(); 
+        if (!uploadedImage) return;
+
+        const { x, y } = getMousePos(e);
+        const hitIndex = getHitMarkerIndex(x, y);
+
+        if (hitIndex !== -1) {
+            markers.splice(hitIndex, 1); 
+            drawCanvas();
+        }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!uploadedImage) return;
+        const { x, y } = getMousePos(e);
+
+        if (!isDragging) {
+            if (getHitMarkerIndex(x, y) !== -1) {
+                canvas.style.cursor = 'move';
+            } else {
+                canvas.style.cursor = 'crosshair';
+            }
+        }
+
+        if (isDragging && draggedMarkerIndex !== -1) {
+            markers[draggedMarkerIndex].x = Math.round(x);
+            markers[draggedMarkerIndex].y = Math.round(y);
+            drawCanvas();
+        }
+    });
+
+    window.addEventListener('mouseup', (e) => {
+        if (e.button === 0) { 
+            isDragging = false;
+            draggedMarkerIndex = -1;
+            drawCanvas(); 
+        }
+    });
+
+    fwInput.addEventListener('input', drawCanvas);
+    fhInput.addEventListener('input', drawCanvas);
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+        markers = [];
+        drawCanvas();
+    });
+
+    function drawCanvas() {
+        if (!uploadedImage) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(uploadedImage, 0, 0);
+
+        const fw = parseInt(fwInput.value) || 64;
+        const fh = parseInt(fhInput.value) || 64;
+
+        markers.forEach((marker, index) => {
+            const topX = marker.x - (fw / 2);
+            const topY = marker.y - (fh / 2);
+
+            ctx.strokeStyle = (isDragging && draggedMarkerIndex === index) ? '#fbbf24' : 'rgba(239, 68, 68, 0.9)'; 
+            ctx.lineWidth = 2;
+            ctx.strokeRect(topX, topY, fw, fh);
+
+            ctx.beginPath();
+            ctx.moveTo(marker.x - 5, marker.y);
+            ctx.lineTo(marker.x + 5, marker.y);
+            ctx.moveTo(marker.x, marker.y - 5);
+            ctx.lineTo(marker.x, marker.y + 5);
+            ctx.stroke();
+
+            ctx.fillStyle = (isDragging && draggedMarkerIndex === index) ? '#fbbf24' : '#ef4444';
+            ctx.fillRect(topX, topY, 18, 18);
+
+            ctx.fillStyle = (isDragging && draggedMarkerIndex === index) ? 'black' : 'white';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textBaseline = 'top';
+            ctx.fillText(index + 1, topX + 5, topY + 3);
+        });
+    }
+
+    // --- AUTO DETECT LOGIC ---
+    document.getElementById('autoDetectBtn').addEventListener('click', () => {
+        if (!uploadedImage) {
+            alert("Please upload a sprite sheet first.");
+            return;
+        }
+
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        // 1. Get raw pixel data from the canvas
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const data = imgData.data;
+        const visited = new Uint8Array(width * height);
+        const boxes = [];
+
+        // 2. Scan for non-transparent pixels to find connected islands (sprites)
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                
+                // If not visited and pixel is not fully transparent
+                if (!visited[idx] && data[idx * 4 + 3] > 10) { 
+                    let minX = x, maxX = x, minY = y, maxY = y;
+                    const stack = [x, y];
+                    visited[idx] = 1;
+                    
+                    // Simple Flood Fill (BFS) to find the edges of this sprite
+                    while (stack.length > 0) {
+                        const cy = stack.pop();
+                        const cx = stack.pop();
+                        
+                        if (cx < minX) minX = cx;
+                        if (cx > maxX) maxX = cx;
+                        if (cy < minY) minY = cy;
+                        if (cy > maxY) maxY = cy;
+                        
+                        // Check surrounding 8 pixels
+                        for(let dy = -1; dy <= 1; dy++) {
+                            for(let dx = -1; dx <= 1; dx++) {
+                                const nx = cx + dx;
+                                const ny = cy + dy;
+                                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                                    const nidx = ny * width + nx;
+                                    if (!visited[nidx] && data[nidx * 4 + 3] > 10) {
+                                        visited[nidx] = 1;
+                                        stack.push(nx, ny);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Filter out tiny 1px/2px noise artifacts
+                    if (maxX - minX > 2 && maxY - minY > 2) {
+                        boxes.push({ minX, maxX, minY, maxY });
+                    }
+                }
+            }
+        }
+
+        // 3. Merge bounding boxes that are very close to each other
+        // This connects detached sprite pieces (like a floating cape or a sword)
+        let merged = true;
+        while (merged) {
+            merged = false;
+            for (let i = 0; i < boxes.length; i++) {
+                for (let j = i + 1; j < boxes.length; j++) {
+                    const b1 = boxes[i];
+                    const b2 = boxes[j];
+                    const gap = 3; // Pixel gap tolerance
+                    
+                    // Check intersection
+                    if (b1.minX - gap <= b2.maxX && b1.maxX + gap >= b2.minX &&
+                        b1.minY - gap <= b2.maxY && b1.maxY + gap >= b2.minY) {
+                        
+                        b1.minX = Math.min(b1.minX, b2.minX);
+                        b1.maxX = Math.max(b1.maxX, b2.maxX);
+                        b1.minY = Math.min(b1.minY, b2.minY);
+                        b1.maxY = Math.max(b1.maxY, b2.maxY);
+                        
+                        boxes.splice(j, 1);
+                        merged = true;
+                        break; 
+                    }
+                }
+                if (merged) break;
+            }
+        }
+
+        if (boxes.length === 0) {
+            alert("No sprites detected! Make sure your image has a transparent background.");
+            return;
+        }
+
+        // 4. Calculate maximum dimensions needed to fit any detected sprite
+        let maxW = 0;
+        let maxH = 0;
+        boxes.forEach(b => {
+            const w = b.maxX - b.minX;
+            const h = b.maxY - b.minY;
+            if (w > maxW) maxW = w;
+            if (h > maxH) maxH = h;
+        });
+
+        // Add a slight padding so edges aren't sliced too tightly
+        const finalWidth = maxW + 4;
+        const finalHeight = maxH + 4;
+        fwInput.value = finalWidth;
+        fhInput.value = finalHeight;
+
+        // 5. Sort boxes top-to-bottom, left-to-right to maintain animation order
+        boxes.sort((a, b) => {
+            const yDiff = a.minY - b.minY;
+            // If they are mostly on the same row (within half a frame's height of each other), sort by X
+            if (Math.abs(yDiff) < (finalHeight / 2)) { 
+                return a.minX - b.minX;
+            }
+            return yDiff; // Otherwise sort by Y
+        });
+
+        // 6. Convert boxes into centered markers
+        markers = boxes.map(b => ({
+            x: Math.round((b.minX + b.maxX) / 2),
+            y: Math.round((b.minY + b.maxY) / 2)
+        }));
+
+        drawCanvas();
+    });
+
+    // --- GENERATE GIF LOGIC ---
+    document.getElementById('generateBtn').addEventListener('click', () => {
+        if (!uploadedImage) {
+            alert('Please select a sprite sheet image first.');
+            return;
+        }
+        if (markers.length === 0) {
+            alert('Please click on the image to mark at least one frame.');
+            return;
+        }
+
+        const frameWidth = parseInt(fwInput.value);
+        const frameHeight = parseInt(fhInput.value);
+        const frameDelay = parseInt(document.getElementById('frameDelay').value);
+
+        const btn = document.getElementById('generateBtn');
+        btn.textContent = "Processing...";
+        btn.disabled = true;
+
+        const gif = new GIF({
+            workers: 2,
+            quality: 10,
+            workerScript: 'js/gif.worker.js',
+            transparent: 0xFF00FF 
+        });
+
+        for (let i = 0; i < markers.length; i++) {
+            const marker = markers[i];
+            const sx = marker.x - (frameWidth / 2);
+            const sy = marker.y - (frameHeight / 2);
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = frameWidth;
+            tempCanvas.height = frameHeight;
+            const tempCtx = tempCanvas.getContext('2d');
+
+            tempCtx.clearRect(0, 0, frameWidth, frameHeight);
+            tempCtx.drawImage(uploadedImage, sx, sy, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight);
+
+            const imageData = tempCtx.getImageData(0, 0, frameWidth, frameHeight);
+            const data = imageData.data;
+
+            for (let j = 0; j < data.length; j += 4) {
+                if (data[j + 3] < 128) {
+                    data[j] = 255;    
+                    data[j + 1] = 0;  
+                    data[j + 2] = 255; 
+                    data[j + 3] = 255; 
+                } else {
+                    data[j + 3] = 255; 
+                }
+            }
+            
+            tempCtx.putImageData(imageData, 0, 0);
+            gif.addFrame(tempCanvas, { delay: frameDelay, copy: true });
+        }
+
+        gif.on('finished', function(blob) {
+            const url = URL.createObjectURL(blob);
+            const output = document.getElementById('output');
+            output.innerHTML = `
+                <img class="preview" src="${url}" alt="Generated GIF" />
+                <br>
+                <a href="${url}" download="animated_sprite.gif" class="download-btn">Download GIF</a>
+            `;
+            btn.textContent = "Generate GIF";
+            btn.disabled = false;
+        });
+
+        gif.render();
+    });
+</script>
+
+</body>
+</html>
